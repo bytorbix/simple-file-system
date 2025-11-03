@@ -52,8 +52,105 @@ struct FileSystem {
 
 /* File System Functions */
 
-void fs_debug(Disk *disk);
+void fs_debug(Disk *disk) {
+    // Vaidation Checks
+    if (disk == NULL) {
+        perror("fs_debug: Error disk is invalid");
+        return;
+    }
+    if (!disk->mounted) { 
+        fprintf(stderr, "fs_debug: Error disk is not mounted\n");
+        return;
+    }
 
+    Block block_buffer;
+    SuperBlock superblock;
+
+    // Attempt to copy the content of super block into block_buffer
+    if (disk_read(disk, 0, block_buffer.data) < 0) {
+        perror("fs_debug: Failed to read SuperBlock from disk");
+        return;
+    }
+
+    superblock = block_buffer.super; // Copy the initialized superblock into the union
+
+    // super block validation check
+    if (superblock.magic_number != MAGIC_NUMBER) {
+        fprintf(stderr, 
+                "fs_debug: Error Disk magic number (0x%x) is invalid. Expected (0x%x).\n"
+                "The disk is either unformatted or corrupted.\n",
+                superblock.magic_number, MAGIC_NUMBER);
+        return;
+    }
+    
+    // Printing The Super block values (Using %u for consistency)
+    printf("SuperBlock:\n");
+    printf("\tmagic number is valid\n");
+    printf("\t%u blocks\n", superblock.blocks);
+    printf("\t%u inode blocks\n", superblock.inode_blocks);
+    printf("\t%u inodes\n", superblock.inodes); 
+
+    // --- Scanning Inode Table ---
+    Block inode_buffer;
+    for (uint32_t i = 1; i <= superblock.inode_blocks; i++) // Iterate over all Inode Blocks (1 to N)
+    {
+        // Read the current Inode Block
+        if (disk_read(disk, i, inode_buffer.data) < 0) {
+            perror("fs_debug: Failed to read Inode Block from disk");
+            return;
+        }
+
+        // Iterate through all Inodes within the current block (0 to 127)
+        for (uint32_t j = 0; j < INODES_PER_BLOCK; j++) {
+            Inode current_node = inode_buffer.inodes[j];
+            
+            if (current_node.valid) {
+                // Calculate and print the global inode index
+                uint32_t inode_index = (i - 1) * INODES_PER_BLOCK + j; 
+                printf("Inode %u:\n", inode_index);
+                printf("\tsize: %u bytes\n", current_node.size);
+                
+                // Scan and print Direct Pointers
+                printf("\tdirect blocks:");
+                int count = 0;
+                for (uint32_t k = 0; k < POINTERS_PER_NODE; k++) {
+                    uint32_t block_num = current_node.direct[k];
+                    if (block_num != 0) {
+                        printf(" %u", block_num);
+                        count++;
+                    }
+                }
+                printf(" (%d total)\n", count); 
+
+                // Scan and print Indirect Pointers
+                uint32_t indirect_block_num = current_node.indirect;
+                if (indirect_block_num != 0) {
+                    printf("\tindirect block: %u\n", indirect_block_num);
+
+                    Block indirect_buffer;
+                    // Attempt to read the indirect block from the disk
+                    if (disk_read(disk, indirect_block_num, indirect_buffer.data) < 0) {
+                        perror("fs_debug: Failed to read indirect block");
+                    }
+                    else {
+                        // read the pointers array inside the indirect block
+                        printf("\tindirect pointers:");
+                        int indirect_count = 0;
+
+                        for (uint32_t k = 0; k < POINTERS_PER_BLOCK; k++) {
+                            uint32_t data_block_num = indirect_buffer.pointers[k];
+                            if (data_block_num != 0) {
+                                printf(" %u", data_block_num);
+                                indirect_count++;
+                            }
+                        }
+                        printf(" (%d total)\n", indirect_count);
+                    }
+                }
+            }
+        }
+    }
+}
 
 bool fs_format(Disk *disk) 
 {
@@ -246,7 +343,7 @@ void fs_unmount(FileSystem *fs) {
         // Continue cleanup in case memory was still allocated
     }
 
-    // --- Memory Cleanup ---
+    // Memory Cleanup 
     if (fs->meta_data != NULL) {
         free(fs->meta_data);
         fs->meta_data = NULL;
