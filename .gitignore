@@ -1,1 +1,4 @@
 .vscode/c_cpp_properties.json
+mfs_test
+mfs_test_disk.img
+main

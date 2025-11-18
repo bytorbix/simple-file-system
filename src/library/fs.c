@@ -59,7 +59,7 @@ void fs_debug(Disk *disk) {
         for (uint32_t j = 0; j < INODES_PER_BLOCK; j++) {
             Inode current_node = inode_buffer.inodes[j];
             
-            if (current_node.valid) {
+            if (current_node.valid) {   
                 // Calculate and print the global inode index
                 uint32_t inode_index = (i - 1) * INODES_PER_BLOCK + j; 
                 printf("Inode %u:\n", inode_index);
@@ -119,7 +119,7 @@ bool fs_format(Disk *disk)
     }
 
     // Initializing the super block
-    SuperBlock superblock;
+    SuperBlock superblock; 
     superblock.magic_number = MAGIC_NUMBER;
     superblock.blocks = (uint32_t)disk->blocks;
 
@@ -148,6 +148,8 @@ bool fs_format(Disk *disk)
         perror("fs_format: Failed to write SuperBlock to disk");
         return false;
     }
+
+    memset(block_buffer.data, 0, BLOCK_SIZE);
 
     // Clean the inode tables
     for (uint32_t i = 1; i <= superblock.inode_blocks; i++) {
