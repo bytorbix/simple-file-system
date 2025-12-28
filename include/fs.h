@@ -30,6 +30,11 @@
         uint32_t inodes;        // Total number of Inode structures
     };
 
+    typedef struct Bitmap Bitmap;
+    struct Bitmap {
+        uint32_t *bitmap;   // Bitmap array Cache
+    };
+
 
     typedef struct Inode Inode;
     struct Inode{
@@ -47,6 +52,7 @@
         Inode inodes[INODES_PER_BLOCK];        // Inode Table Block: Stores an array of 128 Inode structures (metadata for files).
         uint32_t pointers[POINTERS_PER_BLOCK]; // Indirect Block: An array of block numbers used for large file addressing.
         char data[BLOCK_SIZE];                 // Data Block: Raw storage for file content.
+
     };
 
 
@@ -61,22 +67,17 @@
 
     /* File System Functions Prototypes (Declarations) */
 
-    void fs_debug(Disk *disk);
-
+    void fs_debug(FileSystem *fs);
     bool fs_format(Disk *disk);
-
     bool fs_mount(FileSystem *fs, Disk *disk);
-
     void fs_unmount(FileSystem *fs);
-
     ssize_t fs_create(FileSystem *fs);
-
     bool fs_remove(FileSystem *fs, size_t inode_number);
-
     ssize_t fs_stat(FileSystem *fs, size_t inode_number);
-
     ssize_t fs_read(FileSystem *fs, size_t inode_number, char *data, size_t length, size_t offset);
-
     ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length, size_t offset);
+    size_t* fs_allocate(FileSystem *fs, size_t blocks_to_reserve);
+    bool fs_bitmap_to_disk(FileSystem *fs);
+
 
     #endif // FS_H

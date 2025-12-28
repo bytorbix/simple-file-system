@@ -1,6 +1,12 @@
-#include <stdint.h>
+#ifndef UTILS_H
+#define UTILS_H
 
-inline void flip_bit(uint32_t *bitmap, int offset) {
+#include <stdint.h>
+#include <stdbool.h>
+
+
+static inline void flip_bit(uint32_t *bitmap, int offset) 
+{
     if (offset < 0 || offset > 31) {
         // Handle invalid offset, perhaps assert or return early.
         return; 
@@ -15,8 +21,8 @@ inline void flip_bit(uint32_t *bitmap, int offset) {
     *bitmap ^= mask;
 }
 
-static inline void set_bit(uint32_t *bitmap, int block, int bit_to_set) {
-
+static inline void set_bit(uint32_t *bitmap, int block, int bit_to_set) 
+{
     int word_index = block / BITS_PER_WORD;
     int offset = block % BITS_PER_WORD;
 
@@ -51,5 +57,9 @@ static inline bool get_bit(uint32_t *bitmap, int block)
     uint32_t mask = 1U << offset;
 
     return (bitmap[word_index] & mask) != 0;
-
 }
+
+
+
+
+#endif

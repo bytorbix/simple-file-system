@@ -7,6 +7,19 @@
 
 /* Disk Functions Definitions */
 
+void disk_debug(Disk *disk) {
+    if (disk == NULL) {
+        return;
+    }
+
+    printf("--------Disk Metadata--------\n");
+    printf("Disk is %s\n", (disk->mounted) ? "Mounted" : "Not Mounted");
+    if (disk->mounted) {
+        printf("Sum of write operations on the disk: %ld\n", disk->writes);
+        printf("Sum of read operations on the disk: %ld\n", disk->reads);
+    }
+}
+
 /* Opens the file and returns the pointer to the virtual disk*/
 Disk * disk_open(const char *path, size_t blocks) {
 

@@ -23,12 +23,9 @@ struct Disk {
 
 /* Disk Functions Prototypes (Declarations) */
 
+void disk_debug(Disk *disk);
 Disk * disk_open(const char *path, size_t blocks);
-
 void disk_close(Disk *disk);
-
 ssize_t disk_write(Disk *disk, size_t block, char *data);
-
 ssize_t disk_read(Disk *disk, size_t block, char *data);
-
 #endif  
