@@ -498,29 +498,151 @@ ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length,
         return -1;
     }
 
+    // Figure out which logical blocks this write spans
+    size_t start_logical_block = offset / BLOCK_SIZE;
+    size_t start_block_offset = offset % BLOCK_SIZE;   // byte offset within the first block
 
-    // Calculate Inode Block and offset
+    size_t end_byte = offset + length;                  // absolute end position in file
+    size_t end_logical_block = (end_byte > 0) ? ((end_byte-1) / BLOCK_SIZE) : 0;
+
+    // Locate the inode: block 0 is the superblock, so inode blocks start at 1
     uint32_t inode_block_idx = 1 + (inode_number / INODES_PER_BLOCK);
-    uint32_t inode_offset = inode_number % INODES_PER_BLOCK;
+    uint32_t inode_offset_in_block = inode_number % INODES_PER_BLOCK;
 
-    // Read the inode block
+    // Read the block containing our inode and get a pointer to it
     Block inode_buffer;
-    if (disk_read(fs->disk, inode_block_idx, inode_buffer.data) < 0) {
-        perror("fs_write: Failed to read inode block");
+    if (disk_read(fs->disk, inode_block_idx, inode_buffer.data) < 0)
+    {
+        fprintf(stderr, "fs_write: Error writing has failed.\n");
         return -1;
     }
-    
-    // Get pointer to the target inode
-    Inode *inode = &inode_buffer[inode_offset];
+    Inode *target = &inode_buffer.inodes[inode_offset_in_block];
 
-    // Check if inode is valid
-    if (!inode->valid) {
-        fprintf(stderr, "fs_write: Error inode %zu is not valid\n", inode_number);
+    // Walk through each logical block that this write touches
+    size_t bytes_written = 0;
+    for (int i = start_logical_block; i <= end_logical_block; i++)
+    {
+        // Determine the byte range within this block we need to write
+        // First block may start mid-block, all others start at 0
+        size_t block_start = 0;
+        if (i == start_logical_block) {
+            block_start = start_block_offset;
+        }
+
+        // Last block may end mid-block, all others go to BLOCK_SIZE
+        size_t block_end = BLOCK_SIZE;
+        if (i == end_logical_block) {
+            block_end = end_byte % BLOCK_SIZE;
+            if (block_end == 0) block_end = BLOCK_SIZE;
+        }
+
+        // Indirect blocks path (logical block >= 5) 
+        if (i >= POINTERS_PER_INODE)
+        {
+            // indirect block can hold up to 1024 pointers
+            if (i - POINTERS_PER_INODE >= POINTERS_PER_BLOCK) {
+                fprintf(stderr, "fs_write: file size exceeds maximum\n");
+                return -1;
+            }
+
+            // Allocate the indirect pointer block itself if it doesn't exist yet
+            if (target->indirect == 0) {
+                size_t* allocated_block = fs_allocate(fs, 1);
+                if (allocated_block == NULL) {
+                    fprintf(stderr, "fs_write: allocation has failed.\n");
+                    return -1;
+                }
+                target->indirect = *allocated_block;
+                free(allocated_block);
+            }
+
+            // Read the indirect pointer block (array of 1024 block numbers)
+            Block pointers_block;
+            if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
+                fprintf(stderr, "fs_write: Error reading has failed.\n");
+                return -1;
+            }
+
+            // Map logical block to indirect index 
+            size_t index = i - POINTERS_PER_INODE;
+
+            // Allocate a data block if this indirect entry is empty
+            if (pointers_block.pointers[index] == 0) {
+                size_t* allocated_block = fs_allocate(fs, 1);
+                if (allocated_block == NULL) {
+                    fprintf(stderr, "fs_write: allocation has failed.\n");
+                    return -1;
+                }
+                pointers_block.pointers[index] = *allocated_block;
+
+                // Persist the updated indirect pointer block back to disk
+                if (disk_write(fs->disk, target->indirect, pointers_block.data) < 0) {
+                    fprintf(stderr, "fs_write: Error writing has failed.\n");
+                    return -1;
+                }
+                free(allocated_block);
+            }
+
+            //  read existing data block, overlay our data, write back
+            Block buffer;
+            if (disk_read(fs->disk, pointers_block.pointers[index], buffer.data) < 0)
+            {
+                fprintf(stderr, "fs_write: Error reading has failed.\n");
+                return -1;
+            }
+            memcpy(buffer.data + block_start, data + bytes_written, block_end - block_start);
+            if (disk_write(fs->disk, pointers_block.pointers[index], buffer.data) < 0) {
+                fprintf(stderr, "fs_write: Error writing has failed.\n");
+                return -1;
+            }
+            bytes_written += (block_end - block_start);
+        }
+        // Direct blocks path (logical block 0-4)
+        else {
+            // Allocate a data block if this direct pointer is empty
+            if (target->direct[i] == 0)
+            {
+                size_t* allocated_block = fs_allocate(fs, 1);
+                if (allocated_block == NULL) {
+                    fprintf(stderr, "fs_write: allocation has failed.\n");
+                    return -1;
+                }
+                target->direct[i] = *allocated_block;
+                free(allocated_block);
+            }
+
+            // read existing data block, overlay our data, write back
+            Block buffer;
+            if (disk_read(fs->disk, target->direct[i], buffer.data) < 0)
+            {
+                fprintf(stderr, "fs_write: Error reading has failed.\n");
+                return -1;
+            }
+
+            memcpy(buffer.data + block_start, data + bytes_written, block_end - block_start);
+            if (disk_write(fs->disk, target->direct[i], buffer.data) < 0) {
+                fprintf(stderr, "fs_write: Error writing has failed.\n");
+                return -1;
+            }
+            bytes_written += (block_end - block_start);
+        }
+    }
+
+    // Update file size if we extended past the previous end
+    if (end_byte > target->size) {
+        target->size = end_byte;
+    }
+
+    // Write the modified inode (updated pointers + size) back to disk
+    if (disk_write(fs->disk, inode_block_idx, inode_buffer.data) < 0)
+    {
+        fprintf(stderr, "fs_write: Error writing has failed.\n");
         return -1;
     }
 
-    
-
+    // For now we save the bitmap after every single write until a solution comes up
+    fs_bitmap_to_disk(fs);
+    return bytes_written;
 }
 
 bool fs_remove(FileSystem *fs, size_t inode_number) {return false;}
