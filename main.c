@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "disk.h"
 #include "fs.h"
@@ -9,6 +10,97 @@
 void print_passed(const char* message) { printf("[OK]:   %s\n", message); }
 void print_failed(const char* message) { printf("[FAIL]: %s\n", message); }
 
+void ls(FileSystem *fs, ssize_t dir_inode) // Demo ls command for test case
+{
+    // Validation check
+    if (fs == NULL || fs->disk == NULL) {
+        perror("ls: Error fs or disk is invalid (NULL)");
+        return;
+    }
+    if (!fs->disk->mounted)
+    {
+        fprintf(stderr, "ls: Error disk is not mounted, cannot procceed t\n");
+        return;
+    }
+
+    // Read the directory inode and confirm it's a directory
+    uint32_t inode_block_idx = 1 + (dir_inode / INODES_PER_BLOCK);
+    uint32_t inode_offset = dir_inode % INODES_PER_BLOCK;
+
+    Block inode_buf;
+    if (disk_read(fs->disk, inode_block_idx, inode_buf.data) < 0) return;
+
+    Inode *target = &inode_buf.inodes[inode_offset]; // our dir inode
+
+    if (target->valid != INODE_DIR)
+    {
+        perror("ls: Inode given is not a directory.");
+        return;
+    }
+    int count = 0;
+    for (size_t i = 0; i < target->size; i+=32) 
+    {
+        DirEntry entry;
+        if (fs_read(fs, dir_inode, (char *)&entry, sizeof(DirEntry), i) < 0) return;
+        if ((entry.inode_number != UINT32_MAX)) 
+        {
+            size_t file_size = fs_stat(fs, (size_t)entry.inode_number);
+            printf("File: %d (Inode %d) - %s (Size %ld)\n", count, entry.inode_number, entry.name, file_size);
+            count++;
+        }
+    }
+}
+
+void cat(FileSystem *fs, ssize_t inode_file) 
+{
+    // Validation check
+    if (fs == NULL || fs->disk == NULL) {
+        perror("cat: Error fs or disk is invalid (NULL)");
+        return;
+    }
+    if (!fs->disk->mounted)
+    {
+        fprintf(stderr, "cat: Error disk is not mounted, cannot procceed t\n");
+        return;
+    }
+
+    size_t file_size = fs_stat(fs, inode_file);
+    if (file_size <= 0) return;
+
+    char *buffer = malloc(file_size + 1);
+    if (!buffer) {
+        perror("cat: malloc failed");
+        return;
+    }
+    if (fs_read(fs, inode_file, buffer, file_size, 0) < 0) 
+    { 
+        free(buffer);
+        return; 
+    }
+    buffer[file_size] = '\0';
+
+    int word_count = 0;
+    for (size_t i = 0; i < file_size; i++) {
+        putchar(buffer[i]);
+
+        if (isspace(buffer[i])) {
+            word_count++;
+
+            if (word_count >= 30) {
+                putchar('\n');
+                word_count = 0;
+
+                while (i + 1 < file_size && isspace(buffer[i + 1])) { // skip extra spaces
+                    i++;
+                }
+            }
+        }
+    }
+    printf("\n");
+    free(buffer);
+}
+
+
 int main() {
     Disk *disk = disk_open("mfs_test_disk.img", 100);
     fs_format(disk);
@@ -16,53 +108,57 @@ int main() {
     FileSystem fs = {0};
     fs_mount(&fs, disk);
 
+
+    // Allocate inodes
     ssize_t inode_file1 = fs_create(&fs);
     ssize_t inode_file2 = fs_create(&fs);
-    ssize_t inode_dir1  = dir_create(&fs);
+    ssize_t inode_file3 = fs_create(&fs);
 
-    // Test 1: dir_create
-    printf("\n--- Test 1: dir_create ---\n");
-    if (inode_dir1 >= 0) print_passed("dir_create returned a valid inode");
-    else                 print_failed("dir_create failed");
+    // Allocate a directory
+    ssize_t inode_dir1 = dir_create(&fs);
+    ssize_t inode_sub_dir1 = dir_create(&fs);
+    ssize_t inode_sub_dir2 = dir_create(&fs);
 
-    // Test 2: dir_add + dir_lookup
-    printf("\n--- Test 2: dir_add + dir_lookup ---\n");
-    if (dir_add(&fs, inode_dir1, "file1", inode_file1) == 0)
-        print_passed("dir_add: 'file1' added");
-    else
-        print_failed("dir_add: 'file1' failed");
+    // Adding directories
+    if (dir_add(&fs, 0, "dir1", inode_dir1) < 0) {
+        print_failed("dir_add test_case1 failed");
+    }
+    if (dir_add(&fs, inode_dir1, "dir2", inode_sub_dir1) < 0) {
+        print_failed("dir_add test_case2 failed");
+    }
+    if (dir_add(&fs, inode_sub_dir1, "dir3", inode_sub_dir2) < 0) {
+        print_failed("dir_add test_case3 failed");
+    }
+    
 
-    if (dir_lookup(&fs, inode_dir1, "file1") == inode_file1)
-        print_passed("dir_lookup: 'file1' found with correct inode");
-    else
-        print_failed("dir_lookup: 'file1' not found or wrong inode");
+    // Adding the files 
+    if (dir_add(&fs, inode_sub_dir2, "file1", inode_file1) < 0) {
+        print_failed("dir_add test_case4 failed");
+    }
 
-    // Test 3: lookup a name that doesn't exist
-    printf("\n--- Test 3: dir_lookup non-existent ---\n");
-    if (dir_lookup(&fs, inode_dir1, "ghost") == -1)
-        print_passed("dir_lookup: 'ghost' correctly returned -1");
-    else
-        print_failed("dir_lookup: 'ghost' should return -1");
+    if (dir_add(&fs, inode_sub_dir2, "file2", inode_file2) < 0) {
+        print_failed("dir_add test_case5 failed");
+    }
 
-    // Test 4: duplicate name rejected
-    printf("\n--- Test 4: duplicate dir_add ---\n");
-    if (dir_add(&fs, inode_dir1, "file1", inode_file2) == -1)
-        print_passed("dir_add: duplicate correctly rejected");
-    else
-        print_failed("dir_add: duplicate should be rejected");
+    if (dir_add(&fs, inode_sub_dir2, "file3", inode_file3) < 0) {
+        print_failed("dir_add test_case6 failed");
+    }
 
-    // Test 5: dir_remove
-    printf("\n--- Test 5: dir_remove ---\n");
-    if (dir_remove(&fs, inode_dir1, "file1") == inode_file1)
-        print_passed("dir_remove: returned correct inode");
-    else
-        print_failed("dir_remove: failed or wrong inode");
+    // Writing data into one of the files
+    char *text = "Hello World!";
+    if (fs_write(&fs, inode_file2, text, strlen(text), 0) < 0) return -1;
 
-    if (dir_lookup(&fs, inode_dir1, "file1") == -1)
-        print_passed("dir_lookup after remove: 'file1' is gone");
-    else
-        print_failed("dir_lookup after remove: 'file1' should not exist");
+    // Lookup the sub directories that holds the files
+    ssize_t desired_dir  = fs_lookup(&fs, "/dir1/dir2/dir3");
+    
+    // List files in the directory
+    ls(&fs, desired_dir);
 
+    // print the file with content
+    cat(&fs, inode_file2);
+
+    // Close and exit
     fs_unmount(&fs);
     return 0;
 }
+

@@ -193,11 +193,9 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
     uint32_t total_inodes = fs->meta_data->inodes;
     uint32_t total_blocks = fs->meta_data->blocks;
     uint32_t meta_data_blocks = fs->meta_data->inode_blocks + 1 + 1;
-    uint32_t inode_blocks_end = fs->meta_data->inode_blocks;
     
 
     // Bitmap
-    ssize_t bitmap_block = fs->meta_data->inode_blocks + 1; // Bitmap always sits right after the inode table
     uint32_t bitmap_words = (total_blocks + BITS_PER_WORD -1)  / BITS_PER_WORD;
 
 
@@ -533,7 +531,7 @@ ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length,
 
     // Walk through each logical block that this write touches
     size_t bytes_written = 0;
-    for (int i = start_logical_block; i <= end_logical_block; i++)
+    for (size_t i = start_logical_block; i <= end_logical_block; i++)
     {
         // Determine the byte range within this block we need to write
         // First block may start mid-block, all others start at 0
