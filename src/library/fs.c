@@ -104,7 +104,6 @@ bool fs_format(Disk *disk)
     superblock.inode_blocks = (uint32_t)ceil(percent_blocks);
     superblock.inodes = superblock.inode_blocks * INODES_PER_BLOCK;
 
- 
     
     // Capacity check
     if (1 + superblock.inode_blocks > superblock.blocks+1) {
@@ -137,6 +136,19 @@ bool fs_format(Disk *disk)
             return false;
         }
     }
+
+    // Set The Inode 0 as root dir
+    Block buffer;
+    memset(buffer.data, 0, BLOCK_SIZE);
+    Inode *target = &buffer.inodes[0];
+    target->valid = INODE_DIR;
+    target->size = 0;
+
+    if (disk_write(disk, 1, buffer.data) < 0) {
+        perror("fs_format: Failed to write block to disk");
+        return false;
+    }
+
     // success
     return true;
 }
@@ -847,3 +859,5 @@ ssize_t fs_stat(FileSystem *fs, size_t inode_number)
         return target->size;
     }
 }
+
+

@@ -17,7 +17,11 @@
     #define POINTERS_PER_INODE (5)
     #define POINTERS_PER_BLOCK (1024)
     #define BITS_PER_WORD (32)
-
+    
+    // Inode
+    #define INODE_FREE 0
+    #define INODE_FILE 1
+    #define INODE_DIR 2
 
 
     // File System Structure
@@ -38,7 +42,10 @@
 
     typedef struct Inode Inode;
     struct Inode{
-        uint32_t valid;                      // Status: 1 if allocated (in use), 0 if free (available).
+        uint32_t valid;                      // Status: 0 Indicates Free/Deleted Slot, 
+                                             // 1 Indicatesa an Allocated File Inode 
+                                             // 2 Indicates a Directory Inode
+
         uint32_t size;                       // File size in bytes.
         uint32_t direct[POINTERS_PER_INODE];  // Direct block addresses for the file's first data blocks.
         uint32_t indirect;                   // Address of the single indirect block (1024 indirect pointers).
@@ -55,6 +62,11 @@
 
     };
 
+    typedef struct DirEntry DirEntry; 
+    struct DirEntry {
+        uint32_t inode_number; // 0 = empty/deleted slot
+        char name[28]; // Dir Name
+    };
 
     typedef struct FileSystem FileSystem;
     struct FileSystem {
@@ -78,6 +90,5 @@
     ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length, size_t offset);
     size_t* fs_allocate(FileSystem *fs, size_t blocks_to_reserve);
     bool fs_bitmap_to_disk(FileSystem *fs);
-
 
     #endif // FS_H

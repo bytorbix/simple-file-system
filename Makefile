@@ -7,7 +7,7 @@ CFLAGS = -Wall -Wextra -g -fsanitize=address -Iinclude
 LIBS = -lm
 
 # Your source files with their specific paths
-SRCS = main.c src/library/fs.c src/library/disk.c
+SRCS = main.c src/library/fs.c src/library/disk.c src/library/dir.c
 
 # This automatically creates a list of .o files based on the SRCS list
 OBJS = $(SRCS:.c=.o)
