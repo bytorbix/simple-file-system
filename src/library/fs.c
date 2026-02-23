@@ -156,16 +156,23 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
     // Bitmap — allocate full blocks so disk_read won't overflow the buffer
     uint32_t bitmap_words = fs->meta_data->bitmap_blocks * (BLOCK_SIZE / sizeof(uint32_t));
 
-    fs->bitmap = (uint32_t *)calloc(bitmap_words, sizeof(uint32_t));
+    fs->bitmap = calloc(1, sizeof(Bitmap));
     if (fs->bitmap == NULL) {
-        perror("fs_mount: Failed to allocate bitmap");
+        perror("fs_mount: Failed to allocate bitmap struct");
+        free(fs->meta_data);
+        return false;
+    }
+    fs->bitmap->bits = calloc(bitmap_words, sizeof(uint32_t));
+    if (fs->bitmap->bits == NULL) {
+        perror("fs_mount: Failed to allocate bitmap array");
+        free(fs->bitmap);
         free(fs->meta_data);
         return false;
     }
 
     bool bitmap_loaded_valid = load_bitmap(fs);
     if (bitmap_loaded_valid) {
-        if (get_bit(fs->bitmap, 0) == 0) {
+        if (get_bit(fs->bitmap->bits, 0) == 0) {
             bitmap_loaded_valid = false; 
         }
     }
@@ -173,11 +180,11 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
     // Try to load from disk. 
     if (!bitmap_loaded_valid) 
     {
-        memset(fs->bitmap, 0, bitmap_words * sizeof(uint32_t));
+        memset(fs->bitmap->bits, 0, bitmap_words * sizeof(uint32_t));
 
         // Mark Metadata blocks as allocated
         for(uint32_t k=0; k < meta_data_blocks; k++) {
-            set_bit(fs->bitmap, k, 1);
+            set_bit(fs->bitmap->bits, k, 1);
         }
 
         // Scan Inodes to mark data blocks
@@ -187,6 +194,7 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
             Block inode_buffer;
             if (disk_read(fs->disk, i, inode_buffer.data) < 0) {
                 free(fs->meta_data);
+                free(fs->bitmap->bits);
                 free(fs->bitmap);
                 return false;
             }
@@ -196,8 +204,8 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
                 for (uint32_t k = 0; k < POINTERS_PER_INODE; k++) {
                     uint32_t block_num = inode_buffer.inodes[j].direct[k];
                     // Check if pointer is non-zero AND within total disk bounds
-                    if (block_num != 0 && block_num < fs->meta_data->blocks) { 
-                        set_bit(fs->bitmap, block_num, 1); // Mark as Allocated
+                    if (block_num != 0 && block_num < fs->meta_data->blocks) {
+                        set_bit(fs->bitmap->bits, block_num, 1); // Mark as Allocated
                     }
                 }
 
@@ -205,7 +213,7 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
                 uint32_t total_blocks = fs->meta_data->blocks;
 
                 if (indirect_block_num != 0 && indirect_block_num < total_blocks) {
-                    set_bit(fs->bitmap, indirect_block_num, 1);
+                    set_bit(fs->bitmap->bits, indirect_block_num, 1);
 
                     Block indirect_buffer;
                     // Attempt to copy the indirect pointer into the indirect_buffer (basically the address)
@@ -213,6 +221,7 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
                         // Handle the read error and CLEAN UP ALL allocated memory
                         perror("fs_mount: Failed to read indirect block during scan");
                         free(fs->meta_data);
+                        free(fs->bitmap->bits);
                         free(fs->bitmap);
                         return false;
                     }
@@ -222,11 +231,41 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
 
                         // Check if the pointer is non-zero AND within total disk bounds
                         if (data_block_num != 0 && data_block_num < total_blocks) {
-                            set_bit(fs->bitmap, data_block_num, 1); // Mark the data block as allocated
+                            set_bit(fs->bitmap->bits, data_block_num, 1); // Mark the data block as allocated
                         }
                     }
                 }
-            }    
+                uint32_t di_block_num = inode_buffer.inodes[j].double_indirect;
+                if (di_block_num != 0 && di_block_num < total_blocks) 
+                {
+                    set_bit(fs->bitmap->bits, di_block_num, 1);
+                    Block l1_buffer;
+                    if (disk_read(fs->disk, di_block_num, l1_buffer.data) < 0) 
+                    {
+                        perror("fs_mount: Failed to read double indirect block during scan");
+                        free(fs->meta_data);
+                        free(fs->bitmap->bits);
+                        free(fs->bitmap);
+                        return false;
+                    }
+                    for (size_t k = 0; k < POINTERS_PER_BLOCK; k++) {
+                        if (l1_buffer.pointers[k] != 0) {
+                            set_bit(fs->bitmap->bits, l1_buffer.pointers[k], 1);
+                            Block l2_buffer;
+                            if (disk_read(fs->disk, l1_buffer.pointers[k], l2_buffer.data) < 0) {
+                                perror("fs_mount: Failed to read from disk");
+                                return false;
+                            }
+                            for (size_t p = 0; p < POINTERS_PER_BLOCK; p++) {
+                                if (l2_buffer.pointers[p] != 0) 
+                                {
+                                    set_bit(fs->bitmap->bits, l2_buffer.pointers[p], 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -248,6 +287,7 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
         if (disk_read(fs->disk, i, inode_buffer.data) < 0) {
             // Error handling (free memory and return false)
             free(fs->meta_data);
+            free(fs->bitmap->bits);
             free(fs->bitmap);
             free(fs->ibitmap);
             return false;
@@ -284,12 +324,19 @@ void fs_unmount(FileSystem *fs) {
         // Continue cleanup in case memory was still allocated
     }
 
-    // Memory Cleanup 
+    // Flush dirty bitmap before freeing meta_data (save_bitmap needs it)
+    if (fs->bitmap != NULL && fs->bitmap->dirty) {
+        save_bitmap(fs);
+    }
+
+    // Memory Cleanup
     if (fs->meta_data != NULL) {
         free(fs->meta_data);
         fs->meta_data = NULL;
     }
-    if (fs->bitmap != NULL) {
+    if (fs->bitmap != NULL)
+    {
+        free(fs->bitmap->bits);
         free(fs->bitmap);
         fs->bitmap = NULL;
     }
@@ -330,7 +377,7 @@ size_t* fs_allocate(FileSystem *fs, size_t blocks_to_reserve) {
     }
 
     // init of the bitmap
-    uint32_t *bitmap = fs->bitmap;
+    uint32_t *bitmap = fs->bitmap->bits;
     uint32_t total_blocks = fs->meta_data->blocks;
     size_t meta_blocks = 1 + fs->meta_data->inode_blocks + fs->meta_data->bitmap_blocks;
 
@@ -442,6 +489,8 @@ ssize_t fs_create(FileSystem *fs) {
     // Zeroing Out pointers
     for (size_t i = 0; i < 5; i++) target->direct[i] = 0;
     target->indirect=0;
+    target->double_indirect = 0;
+
 
 
     if (disk_write(fs->disk, block_idx, buffer.data) < 0) return -1;
@@ -506,63 +555,154 @@ ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length,
         // Indirect blocks path (logical block >= 5) 
         if (i >= POINTERS_PER_INODE)
         {
-            // indirect block can hold up to 1024 pointers
-            if (i - POINTERS_PER_INODE >= POINTERS_PER_BLOCK) {
-                fprintf(stderr, "fs_write: file size exceeds maximum\n");
-                return -1;
-            }
+            // double indirect pointers
+            if (i - POINTERS_PER_INODE >= POINTERS_PER_BLOCK) 
+            {
+                size_t di_index = i - POINTERS_PER_INODE - POINTERS_PER_BLOCK;
+                size_t l1_idx = di_index / POINTERS_PER_BLOCK;
+                size_t l2_idx = di_index % POINTERS_PER_BLOCK;
 
-            // Allocate the indirect pointer block itself if it doesn't exist yet
-            if (target->indirect == 0) {
-                size_t* allocated_block = fs_allocate(fs, 1);
-                if (allocated_block == NULL) {
-                    fprintf(stderr, "fs_write: allocation has failed.\n");
+                if (target->double_indirect == 0) {
+                    size_t *ab = fs_allocate(fs, 1);
+                    if (ab==NULL) {
+                        fprintf(stderr, "fs_write: allocation has failed.\n");
+                        return -1;
+                    }
+                    target->double_indirect = *ab;
+                    free(ab);
+                    Block buffer;
+                    memset(buffer.data, 0, BLOCK_SIZE);
+                    if (disk_write(fs->disk, target->double_indirect, buffer.data) < 0) {
+                        fprintf(stderr, "fs_write: Error writing has failed.\n");
+                        return -1;
+                    }
+                }
+
+                Block l1_buffer;
+                if (disk_read(fs->disk, target->double_indirect, l1_buffer.data) < 0) {
+                    fprintf(stderr, "fs_write: Error reading has failed.\n");
                     return -1;
                 }
-                target->indirect = *allocated_block;
-                free(allocated_block);
-            }
 
-            // Read the indirect pointer block (array of 1024 block numbers)
-            Block pointers_block;
-            if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
-                fprintf(stderr, "fs_write: Error reading has failed.\n");
-                return -1;
-            }
+                if (l1_buffer.pointers[l1_idx] == 0) 
+                {
+                    // Allocate an L2 Block
+                    size_t *ab = fs_allocate(fs, 1);
+                    if (ab==NULL) {
+                        fprintf(stderr, "fs_write: allocation has failed.\n");
+                        return -1;
+                    }
+                    l1_buffer.pointers[l1_idx] = *ab;
+                    free(ab);
+                    Block buffer;
+                    memset(buffer.data, 0, BLOCK_SIZE);
+                    if (disk_write(fs->disk,  l1_buffer.pointers[l1_idx], buffer.data) < 0) {
+                        fprintf(stderr, "fs_write: Error writing has failed.\n");
+                        return -1;
+                    }
+                    // Write L2 Block back to disk
+                    if (disk_write(fs->disk, target->double_indirect, l1_buffer.data) < 0) {
+                        fprintf(stderr, "fs_write: Error writing has failed.\n");
+                        return -1;
+                    }
+                }
 
-            // Map logical block to indirect index 
-            size_t index = i - POINTERS_PER_INODE;
-
-            // Allocate a data block if this indirect entry is empty
-            if (pointers_block.pointers[index] == 0) {
-                size_t* allocated_block = fs_allocate(fs, 1);
-                if (allocated_block == NULL) {
-                    fprintf(stderr, "fs_write: allocation has failed.\n");
+                Block l2_buffer;
+                if (disk_read(fs->disk, l1_buffer.pointers[l1_idx], l2_buffer.data) < 0) {
+                    fprintf(stderr, "fs_write: Error reading has failed.\n");
                     return -1;
                 }
-                pointers_block.pointers[index] = *allocated_block;
 
-                // Persist the updated indirect pointer block back to disk
-                if (disk_write(fs->disk, target->indirect, pointers_block.data) < 0) {
+                if (l2_buffer.pointers[l2_idx] == 0) 
+                {
+                    // Allocate an L2 Block
+                    size_t *ab = fs_allocate(fs, 1);
+                    if (ab==NULL) {
+                        fprintf(stderr, "fs_write: allocation has failed.\n");
+                        return -1;
+                    }
+                    l2_buffer.pointers[l2_idx] = *ab;
+                    free(ab);
+                    if (disk_write(fs->disk, l1_buffer.pointers[l1_idx], l2_buffer.data) < 0) {
+                        fprintf(stderr, "fs_write: Error writing has failed.\n");
+                        return -1;
+                    }
+                }
+
+                //  read existing data block, overlay our data, write back
+                Block buffer;
+                if (disk_read(fs->disk, l2_buffer.pointers[l2_idx], buffer.data) < 0)
+                {
+                    fprintf(stderr, "fs_write: Error reading has failed.\n");
+                    return -1;
+                }
+                memcpy(buffer.data + block_start, data + bytes_written, block_end - block_start);
+                if (disk_write(fs->disk, l2_buffer.pointers[l2_idx], buffer.data) < 0) {
                     fprintf(stderr, "fs_write: Error writing has failed.\n");
                     return -1;
                 }
-                free(allocated_block);
-            }
+                bytes_written += (block_end - block_start);
 
-            //  read existing data block, overlay our data, write back
-            Block buffer;
-            if (disk_read(fs->disk, pointers_block.pointers[index], buffer.data) < 0)
-            {
-                fprintf(stderr, "fs_write: Error reading has failed.\n");
-                return -1;
+
+
             }
-            memcpy(buffer.data + block_start, data + bytes_written, block_end - block_start);
-            if (disk_write(fs->disk, pointers_block.pointers[index], buffer.data) < 0) {
-                fprintf(stderr, "fs_write: Error writing has failed.\n");
-                return -1;
+            // Single indirect pointer 
+            else {
+                // Allocate the indirect pointer block itself if it doesn't exist yet
+                if (target->indirect == 0) {
+                    size_t* allocated_block = fs_allocate(fs, 1);
+                    if (allocated_block == NULL) {
+                        fprintf(stderr, "fs_write: allocation has failed.\n");
+                        return -1;
+                    }
+                    target->indirect = *allocated_block;
+                    free(allocated_block);
+                    Block buffer;
+                    memset(buffer.data, 0, BLOCK_SIZE);
+                    disk_write(fs->disk, target->indirect, buffer.data);
+                }
+
+                // Read the indirect pointer block (array of 1024 block numbers)
+                Block pointers_block;
+                if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
+                    fprintf(stderr, "fs_write: Error reading has failed.\n");
+                    return -1;
+                }
+
+                // Map logical block to indirect index 
+                size_t index = i - POINTERS_PER_INODE;
+
+                // Allocate a data block if this indirect entry is empty
+                if (pointers_block.pointers[index] == 0) {
+                    size_t* allocated_block = fs_allocate(fs, 1);
+                    if (allocated_block == NULL) {
+                        fprintf(stderr, "fs_write: allocation has failed.\n");
+                        return -1;
+                    }
+                    pointers_block.pointers[index] = *allocated_block;
+
+                    // Persist the updated indirect pointer block back to disk
+                    if (disk_write(fs->disk, target->indirect, pointers_block.data) < 0) {
+                        fprintf(stderr, "fs_write: Error writing has failed.\n");
+                        return -1;
+                    }
+                    free(allocated_block);
+                }
+
+                //  read existing data block, overlay our data, write back
+                Block buffer;
+                if (disk_read(fs->disk, pointers_block.pointers[index], buffer.data) < 0)
+                {
+                    fprintf(stderr, "fs_write: Error reading has failed.\n");
+                    return -1;
+                }
+                memcpy(buffer.data + block_start, data + bytes_written, block_end - block_start);
+                if (disk_write(fs->disk, pointers_block.pointers[index], buffer.data) < 0) {
+                    fprintf(stderr, "fs_write: Error writing has failed.\n");
+                    return -1;
+                }
+                bytes_written += (block_end - block_start);
             }
-            bytes_written += (block_end - block_start);
         }
         // Direct blocks path (logical block 0-4)
         else {
@@ -608,7 +748,7 @@ ssize_t fs_write(FileSystem *fs, size_t inode_number, char *data, size_t length,
     }
 
     // For now we save the bitmap after every single write until a solution comes up
-    save_bitmap(fs);
+    fs->bitmap->dirty = true;
     return bytes_written;
 }
 
@@ -672,31 +812,60 @@ ssize_t fs_read(FileSystem *fs, size_t inode_number, char *data, size_t length, 
         }
 
         if (i >= POINTERS_PER_INODE) {
-            // Indirect path
+            // Double Indirect Path
             if (i - POINTERS_PER_INODE >= POINTERS_PER_BLOCK) {
-                fprintf(stderr, "fs_read: logical block exceeds maximum\n");
-                return -1;
-            }
-            if (target->indirect == 0) {
-                memset(data + bytes_read, 0, block_end - block_start);
-            } 
-            else 
-            {
-                Block pointers_block;
-                if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
-                    fprintf(stderr, "fs_read: Error reading indirect block has failed.\n");
-                    return -1;
-                }
-                size_t index = i - POINTERS_PER_INODE;
-                if (pointers_block.pointers[index] == 0) {
+                size_t di_index = i - POINTERS_PER_INODE - POINTERS_PER_BLOCK;
+                size_t l1_idx = di_index / POINTERS_PER_BLOCK;
+                size_t l2_idx = di_index % POINTERS_PER_BLOCK;
+
+                if (target->double_indirect == 0) 
+                {
                     memset(data + bytes_read, 0, block_end - block_start);
-                } else {
-                    Block buffer;
-                    if (disk_read(fs->disk, pointers_block.pointers[index], buffer.data) < 0) {
-                        fprintf(stderr, "fs_read: Error reading data block has failed.\n");
+                } 
+                else 
+                {
+                    Block l1_buffer;
+                    if (disk_read(fs->disk, target->double_indirect, l1_buffer.data) < 0) return -1;
+
+                    if (l1_buffer.pointers[l1_idx] == 0) {
+                        memset(data + bytes_read, 0, block_end - block_start);
+                    } else {
+                        Block l2_buffer;
+                        if (disk_read(fs->disk, l1_buffer.pointers[l1_idx], l2_buffer.data) < 0) return -1;
+
+                        if (l2_buffer.pointers[l2_idx] == 0) {
+                            memset(data + bytes_read, 0, block_end - block_start);
+                        } else {
+                            Block buffer;
+                            if (disk_read(fs->disk, l2_buffer.pointers[l2_idx], buffer.data) < 0) return -1;
+                            memcpy(data + bytes_read, buffer.data + block_start, block_end - block_start);
+                        }
+                    }
+                }
+            }
+            else {
+                if (target->indirect == 0) {
+                    memset(data + bytes_read, 0, block_end - block_start);
+                } 
+                // Single Indirect Path
+                else 
+                {
+                    Block pointers_block;
+                    if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
+                        fprintf(stderr, "fs_read: Error reading indirect block has failed.\n");
                         return -1;
                     }
-                    memcpy(data + bytes_read, buffer.data + block_start, block_end - block_start);
+                    size_t index = i - POINTERS_PER_INODE;
+                    if (pointers_block.pointers[index] == 0) {
+                        memset(data + bytes_read, 0, block_end - block_start);
+                    } else {
+                        Block buffer;
+                        if (disk_read(fs->disk, pointers_block.pointers[index], buffer.data) < 0) {
+                            fprintf(stderr, "fs_read: Error reading data block has failed.\n");
+                            return -1;
+                        }
+                        memcpy(data + bytes_read, buffer.data + block_start, block_end - block_start);
+                    }
                 }
             }
         } else {
@@ -755,11 +924,11 @@ bool fs_remove(FileSystem *fs, size_t inode_number)
     for(size_t i = 0; i < POINTERS_PER_INODE; i++) 
     {
         if (target->direct[i] != 0) {
-            set_bit(fs->bitmap, target->direct[i], 0);
+            set_bit(fs->bitmap->bits, target->direct[i], 0);
             target->direct[i] = 0;
         }
     }
-    
+
     if (target->indirect != 0) {
         Block pointers_block;
         if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
@@ -767,12 +936,36 @@ bool fs_remove(FileSystem *fs, size_t inode_number)
         }
         for (size_t i = 0; i < POINTERS_PER_BLOCK; i++) {
             if (pointers_block.pointers[i] != 0) {
-                set_bit(fs->bitmap, pointers_block.pointers[i], 0);
+                set_bit(fs->bitmap->bits, pointers_block.pointers[i], 0);
             }
         }
-        set_bit(fs->bitmap, target->indirect, 0);
+        set_bit(fs->bitmap->bits, target->indirect, 0);
         target->indirect = 0;
     }
+    if (target->double_indirect != 0) {
+        Block l1_buffer;
+        if (disk_read(fs->disk, target->double_indirect, l1_buffer.data) < 0) {
+            fprintf(stderr, "fs_remove: Error reading inode block has failed.\n");
+            return false;
+        }
+        for(size_t i = 0; i < POINTERS_PER_BLOCK; i++) {
+            if (l1_buffer.pointers[i] != 0) {
+                Block l2_buffer;
+                if (disk_read(fs->disk, l1_buffer.pointers[i], l2_buffer.data) < 0) {
+                    fprintf(stderr, "fs_remove: Error reading inode block has failed.\n");
+                    return false;
+                }
+                for (size_t j = 0; j < POINTERS_PER_BLOCK; j++) {
+                    if (l2_buffer.pointers[j] != 0) {
+                        set_bit(fs->bitmap->bits, l2_buffer.pointers[j], 0);
+                    }
+                }
+                set_bit(fs->bitmap->bits, l1_buffer.pointers[i], 0);
+            }
+        }
+        set_bit(fs->bitmap->bits, target->double_indirect, 0);
+        target->double_indirect = 0;
+    } 
 
     // Write the modified inode back to disk
     if (disk_write(fs->disk, inode_block_idx, inode_buffer.data) < 0) {
@@ -782,8 +975,8 @@ bool fs_remove(FileSystem *fs, size_t inode_number)
     // Mark inode as free in ibitmap
     set_bit(fs->ibitmap, inode_number, 0);
 
-    // Persist the block bitmap (Temporary)
-    save_bitmap(fs);
+    // Mark dirty — will be flushed on fs_unmount
+    fs->bitmap->dirty = true;
     return true;
 }
 ssize_t fs_stat(FileSystem *fs, size_t inode_number) 

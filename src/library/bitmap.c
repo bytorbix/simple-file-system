@@ -41,7 +41,7 @@ bool save_bitmap(FileSystem *fs)
     // Bitmap blocks live right after the inode table (inode_blocks+1+i)
     // writes to disk from the buffer byte after byte (using char casting) up to bitmap_blocks
     for (uint32_t i = 0; i < fs->meta_data->bitmap_blocks; i++) {
-        if (disk_write(fs->disk, fs->meta_data->inode_blocks+1+i, (char *)fs->bitmap+i*BLOCK_SIZE) < 0) {
+        if (disk_write(fs->disk, fs->meta_data->inode_blocks+1+i, (char *)fs->bitmap->bits+i*BLOCK_SIZE) < 0) {
             perror("save_bitmap: Failed to write bitmap block to disk");
             return false;
         }
@@ -60,7 +60,7 @@ bool load_bitmap(FileSystem *fs)
     // Bitmap blocks live right after the inode table (inode_blocks+1+i)
     // reads the bitmap block from the disk one by one and copies it into the bitmap buffer one byte at a time (we cast the bitmap to char to be able to do that)
     for (uint32_t i = 0; i < fs->meta_data->bitmap_blocks; i++) {
-        if (disk_read(fs->disk, fs->meta_data->inode_blocks+1+i, (char *)fs->bitmap+i*BLOCK_SIZE) < 0) {
+        if (disk_read(fs->disk, fs->meta_data->inode_blocks+1+i, (char *)fs->bitmap->bits+i*BLOCK_SIZE) < 0) {
             perror("load_bitmap: Failed to read bitmap block from disk");
             return false;
         }

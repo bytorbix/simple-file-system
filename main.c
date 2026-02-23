@@ -16,7 +16,7 @@ void bitmap_stats(FileSystem *fs)
     uint32_t total = fs->meta_data->blocks;
     uint32_t used = 0;
     for (uint32_t i = 0; i < total; i++)
-        if (get_bit(fs->bitmap, i)) used++;
+        if (get_bit(fs->bitmap->bits, i)) used++;
 
     printf("bitmap: %u/%u blocks used, %u free (%u bitmap block(s))\n",
            used, total, total - used, fs->meta_data->bitmap_blocks);
@@ -169,6 +169,28 @@ int main() {
     cat(&fs, inode_file2);
 
     bitmap_stats(&fs);
+
+    // Double Indirect Test (5MB file, exceeds single indirect ~4MB range)
+    size_t large_size = 5 * 1024 * 1024;
+    char *write_buf = malloc(large_size);
+    char *read_buf  = malloc(large_size);
+    memset(write_buf, 0xAB, large_size);
+
+    ssize_t inode_large = fs_create(&fs);
+    fs_write(&fs, inode_large, write_buf, large_size, 0);
+    fs_read(&fs, inode_large, read_buf, large_size, 0);
+
+    if (memcmp(write_buf, read_buf, large_size) == 0)
+        print_passed("double indirect: 5MB write/read verified");
+    else
+        print_failed("double indirect: data mismatch");
+
+    bitmap_stats(&fs);
+    fs_remove(&fs, inode_large);
+    bitmap_stats(&fs);
+
+    free(write_buf);
+    free(read_buf);
 
     // Close and exit
     fs_unmount(&fs);

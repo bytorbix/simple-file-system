@@ -5,6 +5,7 @@
     
 
     #include "disk.h"
+    #include "bitmap.h"
     #include <stdbool.h>
     #include <stdint.h>
     #include <stdlib.h>
@@ -43,8 +44,9 @@
                                              // 2 Indicates a Directory Inode
 
         uint32_t size;                       // File size in bytes.
-        uint32_t direct[POINTERS_PER_INODE];  // Direct block addresses for the file's first data blocks.
+        uint32_t direct[POINTERS_PER_INODE]; // Direct block addresses for the file's first data blocks.
         uint32_t indirect;                   // Address of the single indirect block (1024 indirect pointers).
+        uint32_t double_indirect;            // Address of the double indirect block
     };
 
     typedef union Block Block;
@@ -67,7 +69,7 @@
     typedef struct FileSystem FileSystem;
     struct FileSystem {
         Disk *disk;             // Instance of the emulated Disk
-        uint32_t *bitmap;      // Array of free blocks, (In-Memory Bitmap Cache)
+        Bitmap *bitmap;      // Array of free blocks, (In-Memory Bitmap Cache)
         uint32_t *ibitmap;     // Array of free blocks (In-Memory Inodes Bitmap Cache)
         SuperBlock *meta_data;  // Meta data of the file system
     };
