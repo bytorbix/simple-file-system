@@ -59,9 +59,9 @@ bool fs_format(Disk *disk)
 
     
     // Capacity check
-    if ((1 /*Superblock*/) + superblock.inode_blocks + superblock.bitmap_blocks >= superblock.blocks) {
+    if ((1 /*Superblock*/) + superblock.inode_blocks + superblock.bitmap_blocks + 1 >= superblock.blocks) {
         fprintf(stderr, "fs_format: Error metadata blocks amount (%u) exceeds disk capacity (%u)\n", 
-                1 + superblock.inode_blocks+superblock.bitmap_blocks, superblock.blocks);
+                1 + superblock.inode_blocks+superblock.bitmap_blocks + 1, superblock.blocks);
         return false;
     }
 
@@ -86,8 +86,14 @@ bool fs_format(Disk *disk)
         return false;
     }
     
-
+    // cleaning the block_buffer for Re-use
     memset(block_buffer.data, 0, BLOCK_SIZE);
+
+    // formatting the pfs block
+    if (disk_write(disk, superblock.inode_blocks + superblock.bitmap_blocks + 1, block_buffer.data) < 0) {
+        perror("fs_format: Failed to write to disk");
+        return false;
+    }
 
     // Clean the inode table
     for (uint32_t i = 1; i <= superblock.inode_blocks; i++) {
@@ -149,8 +155,7 @@ bool fs_mount(FileSystem *fs, Disk *disk) {
     *(fs->meta_data) = superblock; // Copy the structure contents
 
     uint32_t total_inodes = fs->meta_data->inodes;
-    uint32_t total_blocks = fs->meta_data->blocks;
-    uint32_t meta_data_blocks = fs->meta_data->inode_blocks + fs->meta_data->bitmap_blocks + 1;
+    uint32_t meta_data_blocks = fs->meta_data->inode_blocks + fs->meta_data->bitmap_blocks + 2;
     
 
     // Bitmap — allocate full blocks so disk_read won't overflow the buffer
@@ -379,7 +384,7 @@ size_t* fs_allocate(FileSystem *fs, size_t blocks_to_reserve) {
     // init of the bitmap
     uint32_t *bitmap = fs->bitmap->bits;
     uint32_t total_blocks = fs->meta_data->blocks;
-    size_t meta_blocks = 1 + fs->meta_data->inode_blocks + fs->meta_data->bitmap_blocks;
+    size_t meta_blocks = 2 + fs->meta_data->inode_blocks + fs->meta_data->bitmap_blocks;
 
     // Declaring the allocation blocks array
     size_t *allocated_array = calloc(blocks_to_reserve, sizeof(size_t)); 
@@ -928,7 +933,6 @@ bool fs_remove(FileSystem *fs, size_t inode_number)
             target->direct[i] = 0;
         }
     }
-
     if (target->indirect != 0) {
         Block pointers_block;
         if (disk_read(fs->disk, target->indirect, pointers_block.data) < 0) {
@@ -1037,3 +1041,4 @@ ssize_t fs_lookup(FileSystem *fs, const char *path)
     }
     return (ssize_t)current_inode;
 }
+

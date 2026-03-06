@@ -1,21 +1,23 @@
-    #ifndef BITMAP_H
-    #define BITMAP_H
+#pragma once
 
-    #include <stdbool.h>
-    #include <stdint.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include "disk.h"
 
-    typedef struct Disk Disk;
-    typedef struct FileSystem FileSystem;
+#define BITS_PER_WORD (32)
+#define BITS_PER_BITMAP_BLOCK (BLOCK_SIZE*8)
 
-    typedef struct Bitmap Bitmap;
-    struct Bitmap
-    {
-        bool dirty;
-        uint32_t *bits;     // Bitmap array Cache
-    };
+typedef struct Disk Disk;
+typedef struct FileSystem FileSystem;
 
-    bool format_bitmap(Disk *disk, uint32_t inode_blocks, uint32_t bitmap_blocks);
-    bool save_bitmap(FileSystem *fs);
-    bool load_bitmap(FileSystem *fs);
+typedef struct Bitmap Bitmap;
+struct Bitmap
+{
+    bool dirty;         // Is the bitmap modified or no
+    uint32_t *bits;     // Bitmap array Cache
+};
 
-    #endif // BITMAP_H
+bool format_bitmap(Disk *disk, uint32_t inode_blocks, uint32_t bitmap_blocks);
+bool save_bitmap(FileSystem *fs);
+bool load_bitmap(FileSystem *fs);
+

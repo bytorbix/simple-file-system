@@ -59,7 +59,31 @@ static inline bool get_bit(uint32_t *bitmap, int block)
     return (bitmap[word_index] & mask) != 0;
 }
 
+static inline char* extract_filename(const char *path) 
+{
+    char *filename = strrchr(path, '/');
+    if (filename == NULL) {
+        return NULL;
+    }
+    return filename+1;
+}
 
+static inline char* extract_extension(const char *filename) 
+{
+    char *extension = strrchr(filename, '.');
+    if (extension == NULL) {
+        return NULL;
+    }
+    return extension+1;
+}
 
+static inline char* extract_parentdir(const char *path) 
+{
+    char *last_slash = strrchr(path, '/');
+    char *parentdir = malloc((last_slash - path) + 1);
+    memcpy(parentdir, path, last_slash - path);
+    parentdir[last_slash-path] = '\0';
+    return parentdir;
+}
 
 #endif
